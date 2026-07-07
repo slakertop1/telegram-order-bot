@@ -3,6 +3,12 @@
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+# Подхватываем .env из текущей папки: нужно при запуске без Docker.
+# Уже установленные переменные окружения имеют приоритет над файлом.
+load_dotenv()
+
 
 @dataclass(frozen=True)
 class Config:
