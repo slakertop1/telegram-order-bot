@@ -146,9 +146,9 @@ async def confirm_order(
         f"Заявка <b>#{order_id}</b> принята! Свяжемся с вами в ближайшее время. 🚀"
     )
 
-    if config.payment_provider_token:
+    if config.payments_enabled:
         await callback.message.answer(
-            f"Хотите забронировать место в очереди? Внесите аванс {config.deposit_rub} ₽ — "
+            f"Хотите забронировать место в очереди? Внесите аванс {config.deposit_label} — "
             "он вычитается из стоимости работы.",
             reply_markup=kb.pay_kb(order_id),
         )
@@ -185,11 +185,15 @@ async def my_orders(message: Message, db: Database) -> None:
     await message.answer("\n".join(lines))
 
 
-# --- Оплата аванса (Telegram Payments, работает с тестовым provider token) ---
+# --- Оплата аванса ---
+# Два режима:
+#  1) PAYMENT_PROVIDER_TOKEN задан — классический инвойс в рублях через провайдера;
+#  2) иначе — Telegram Stars (XTR): работает без провайдера и без настройки,
+#     в демо звёзды сразу возвращаются плательщику (STARS_AUTO_REFUND=1).
 
 @router.callback_query(F.data.startswith("pay:"))
 async def send_invoice(callback: CallbackQuery, bot: Bot, config: Config, db: Database) -> None:
-    if not config.payment_provider_token:
+    if not config.payments_enabled:
         await callback.answer("Оплата не настроена", show_alert=True)
         return
     order_id = int(callback.data.split(":", 1)[1])
@@ -200,15 +204,25 @@ async def send_invoice(callback: CallbackQuery, bot: Bot, config: Config, db: Da
     if order.paid:
         await callback.answer("Аванс уже внесён ✅", show_alert=True)
         return
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"Аванс по заявке #{order_id}",
-        description="Бронирование места в очереди. Сумма вычитается из стоимости работы.",
-        payload=f"deposit:{order_id}",
-        provider_token=config.payment_provider_token,
-        currency="RUB",
-        prices=[LabeledPrice(label="Аванс", amount=config.deposit_rub * 100)],
-    )
+    if config.payment_provider_token:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"Аванс по заявке #{order_id}",
+            description="Бронирование места в очереди. Сумма вычитается из стоимости работы.",
+            payload=f"deposit:{order_id}",
+            provider_token=config.payment_provider_token,
+            currency="RUB",
+            prices=[LabeledPrice(label="Аванс", amount=config.deposit_rub * 100)],
+        )
+    else:  # Telegram Stars
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"Аванс по заявке #{order_id}",
+            description="Бронирование места в очереди. Демо-режим: звёзды вернутся сразу после оплаты.",
+            payload=f"deposit:{order_id}",
+            currency="XTR",
+            prices=[LabeledPrice(label="Аванс", amount=config.deposit_stars)],
+        )
     await callback.answer()
 
 
@@ -219,10 +233,20 @@ async def pre_checkout(query: PreCheckoutQuery) -> None:
 
 @router.message(F.successful_payment)
 async def payment_done(message: Message, db: Database, bot: Bot, config: Config) -> None:
-    payload = message.successful_payment.invoice_payload  # "deposit:<order_id>"
-    order_id = int(payload.split(":", 1)[1])
+    payment = message.successful_payment
+    order_id = int(payment.invoice_payload.split(":", 1)[1])  # "deposit:<order_id>"
     await db.set_paid(order_id)
     await message.answer(f"Аванс по заявке <b>#{order_id}</b> получен, спасибо! 💳✅")
+
+    if payment.currency == "XTR" and config.stars_auto_refund:
+        try:
+            await bot.refund_star_payment(
+                user_id=message.from_user.id,
+                telegram_payment_charge_id=payment.telegram_payment_charge_id,
+            )
+            await message.answer("Это демо-оплата — звёзды возвращены на ваш счёт. ⭐↩️")
+        except Exception:
+            logger.warning("Не удалось вернуть звёзды за заявку %s", order_id, exc_info=True)
     for admin_id in config.admin_ids:
         try:
             await bot.send_message(admin_id, f"💳 По заявке #{order_id} внесён аванс.")

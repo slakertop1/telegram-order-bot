@@ -10,7 +10,19 @@ class Config:
     admin_ids: tuple[int, ...]
     payment_provider_token: str
     deposit_rub: int
+    deposit_stars: int
+    stars_auto_refund: bool
     db_path: str
+
+    @property
+    def payments_enabled(self) -> bool:
+        return bool(self.payment_provider_token) or self.deposit_stars > 0
+
+    @property
+    def deposit_label(self) -> str:
+        if self.payment_provider_token:
+            return f"{self.deposit_rub} ₽"
+        return f"{self.deposit_stars} ⭐"
 
 
 def load_config() -> Config:
@@ -26,6 +38,8 @@ def load_config() -> Config:
         admin_ids=admin_ids,
         payment_provider_token=os.environ.get("PAYMENT_PROVIDER_TOKEN", "").strip(),
         deposit_rub=int(os.environ.get("DEPOSIT_RUB", "500")),
+        deposit_stars=int(os.environ.get("DEPOSIT_STARS", "1")),
+        stars_auto_refund=os.environ.get("STARS_AUTO_REFUND", "1") == "1",
         db_path=os.environ.get("DB_PATH", "data/bot.db"),
     )
 
